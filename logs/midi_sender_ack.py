@@ -37,7 +37,7 @@ def pick_input_port():
     print("Available MIDI inputs:")
     for i, name in enumerate(names):
         print(f"{i}: {name}")
-    return names[0]
+    return names[1]
 
 # ---------------- Threads ----------------
 def ack_listener(sock):
