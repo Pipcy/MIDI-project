@@ -4,7 +4,7 @@ from threading import Thread, Lock, Event
 from queue import Queue, Empty
 
 # ---------------- Configuration ----------------
-DEST_IP = "10.0.0.181"  # Receiver IP
+DEST_IP = "10.239.166.92"  # Receiver IP
 DEST_PORT = 5005
 LOG_PATH = "sender_log.csv"
 
@@ -80,6 +80,7 @@ def sender_thread(sock):
             header = struct.pack(HDR_FMT, seq, send_ts, len(midi_bytes))
             packet = header + midi_bytes
             sock.sendto(packet, (DEST_IP, DEST_PORT))
+            print(f"Sent seq={seq}, {len(midi_bytes)} bytes to {DEST_IP}:{DEST_PORT}")
 
             # push to log queue
             log_queue.put((seq, send_ts))

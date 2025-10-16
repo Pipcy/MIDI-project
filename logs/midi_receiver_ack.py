@@ -25,6 +25,7 @@ with open(LOG_PATH, "w", newline="") as f:
     while True:
         try:
             data, addr = sock.recvfrom(2048)
+            print(f"Received {len(data)} bytes from {addr}")
         except Exception as e:
             print("Receive error:", e)
             continue
