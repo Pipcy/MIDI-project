@@ -1,4 +1,4 @@
-import socket, struct, time, csv
+import socket, struct, time, csv, mido
 
 # ---------------- Configuration ----------------
 LISTEN_IP = "0.0.0.0"
@@ -13,11 +13,22 @@ ACK_SIZE = struct.calcsize(ACK_FMT)
 
 mono_ns = getattr(time, "monotonic_ns", lambda: int(time.monotonic() * 1e9))
 
-# ---------------- Setup ----------------
+# ---------------- MIDI Setup ----------------
+print("Available MIDI output ports:")
+for name in mido.get_output_names():
+    print("   ", name)
+
+# Choose the first available MIDI output port
+out_name = mido.get_output_names()[0]
+outport = mido.open_output(out_name)
+print(f"Using MIDI output: {out_name}")
+
+# ---------------- UDP Setup ----------------
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind((LISTEN_IP, LISTEN_PORT))
 print(f"Receiver listening on {LISTEN_IP}:{LISTEN_PORT} → {LOG_PATH}")
 
+# ---------------- Main Loop ----------------
 with open(LOG_PATH, "w", newline="") as f:
     writer = csv.writer(f)
     writer.writerow(["seq", "send_ts_ms", "recv_ts_ms"])
@@ -25,7 +36,8 @@ with open(LOG_PATH, "w", newline="") as f:
     while True:
         try:
             data, addr = sock.recvfrom(2048)
-            print(f"Received {len(data)} bytes from {addr}")
+            # Debug
+            # print(f"Received {len(data)} bytes from {addr}")
         except Exception as e:
             print("Receive error:", e)
             continue
@@ -36,18 +48,25 @@ with open(LOG_PATH, "w", newline="") as f:
 
         # Unpack header
         seq, send_ts, length = struct.unpack(HDR_FMT, data[:HDR_SIZE])
+        midi_bytes = data[HDR_SIZE:HDR_SIZE + length]
         send_ts_ms = send_ts / 1_000_000
         recv_ts_ms = recv_ts / 1_000_000
 
-        # Log to CSV
+        # ---- Log to CSV ----
         writer.writerow([seq, send_ts_ms, recv_ts_ms])
         f.flush()
 
-        # --------------- Send ACK ---------------
+        # ---- MIDI Playback ----
+        try:
+            msg = mido.Message.from_bytes(midi_bytes)
+            outport.send(msg)
+            print("Played:", msg)
+        except Exception as e:
+            print("Invalid MIDI message:", e)
+
+        # ---- Send ACK ----
         try:
             ack = struct.pack(ACK_FMT, seq, recv_ts)
             sock.sendto(ack, addr)
-            # Debug
-            # print(f"Sent ACK for seq={seq} to {addr}")
         except Exception as e:
             print("ACK send error:", e)
