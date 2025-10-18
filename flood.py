@@ -1,6 +1,6 @@
 # flood.py
 import socket, struct, time
-DEST=("10.239.166.92",5005)
+DEST=("10.193.68.64",5005)
 HDR="!IqH"
 sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
 
