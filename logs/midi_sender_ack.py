@@ -4,7 +4,7 @@ from threading import Thread, Lock, Event
 from queue import Queue, Empty
 
 # ---------------- Configuration ----------------
-DEST_IP = "10.239.166.92"  # Receiver IP
+DEST_IP = "10.193.68.64"  # Receiver IP
 DEST_PORT = 5005
 LOG_PATH = "sender_log.csv"
 
