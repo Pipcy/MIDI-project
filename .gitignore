@@ -1,2 +1,3 @@
 logs/*.csv
 sender_log.csv
+receiver_log.csv
