@@ -2,6 +2,7 @@ import socket, struct, time, csv, sys
 import mido
 from threading import Thread, Lock, Event
 from queue import Queue, Empty
+import hmac, hashlib
 
 # ---------------- Configuration ----------------
 DEST_IP = "10.193.68.64"  # Receiver IP
@@ -14,6 +15,7 @@ HDR_SIZE = struct.calcsize(HDR_FMT)
 ACK_FMT = "!Iq"           # seq:uint32, recv_ts:int64
 ACK_SIZE = struct.calcsize(ACK_FMT)
 
+SECRET_KEY = b't0ps3cr3tk3y'
 # ---------------- Globals ---------------------
 seq = 0
 acks = {}                 # seq -> recv_ts
@@ -79,6 +81,10 @@ def sender_thread(sock):
             send_ts = mono_ns()
             header = struct.pack(HDR_FMT, seq, send_ts, len(midi_bytes))
             packet = header + midi_bytes
+
+            # compute hash
+            mac = hmac.new(SECRET_KEY, packet, hashlib.sha256).digest()
+
             sock.sendto(packet, (DEST_IP, DEST_PORT))
             print(f"Sent seq={seq}, {len(midi_bytes)} bytes to {DEST_IP}:{DEST_PORT}")
 
