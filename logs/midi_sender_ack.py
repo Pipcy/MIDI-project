@@ -80,11 +80,12 @@ def sender_thread(sock):
             seq += 1
             send_ts = mono_ns()
             header = struct.pack(HDR_FMT, seq, send_ts, len(midi_bytes))
-            packet = header + midi_bytes
+            packet_data = header + midi_bytes
 
             # compute hash
-            mac = hmac.new(SECRET_KEY, packet, hashlib.sha256).digest()
+            mac = hmac.new(SECRET_KEY, packet_data, hashlib.sha256).digest()
 
+            packet = header + midi_bytes + mac
             sock.sendto(packet, (DEST_IP, DEST_PORT))
             print(f"Sent seq={seq}, {len(midi_bytes)} bytes to {DEST_IP}:{DEST_PORT}")
 

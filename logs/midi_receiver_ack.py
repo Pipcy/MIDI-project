@@ -1,4 +1,6 @@
 import socket, struct, time, csv, mido
+import hmac, hashlib
+
 
 # ---------------- Configuration ----------------
 LISTEN_IP = "0.0.0.0"
@@ -12,6 +14,8 @@ ACK_FMT = "!Iq"        # seq:uint32, recv_ts:int64
 ACK_SIZE = struct.calcsize(ACK_FMT)
 
 mono_ns = getattr(time, "monotonic_ns", lambda: int(time.monotonic() * 1e9))
+
+SECRET_KEY = b't0ps3cr3tk3y'
 
 # ---------------- MIDI Setup ----------------
 print("Available MIDI output ports:")
@@ -36,6 +40,14 @@ with open(LOG_PATH, "w", newline="") as f:
     while True:
         try:
             data, addr = sock.recvfrom(2048)
+            # check hmac
+            msg = data[:-32] # msg is all but last 32 bytes
+            mac_recv = data[-32:]# mac is only the last 32 bytes
+            mac_calc = hmac.new(SECRET_KEY, msg, hashlib.sha256).digest()
+            if not hmac.compare_digest(mac_calc, mac_recv):
+                print("Uh oh!")
+                continue
+
             # Debug
             # print(f"Received {len(data)} bytes from {addr}")
         except Exception as e:
