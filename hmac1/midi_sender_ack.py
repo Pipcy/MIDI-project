@@ -5,7 +5,7 @@ from queue import Queue, Empty
 import hmac, hashlib
 
 # ---------------- Configuration ----------------
-DEST_IP = "10.193.68.64"  # Receiver IP
+DEST_IP = "10.239.13.237"  # Receiver IP
 DEST_PORT = 5005
 LOG_PATH = "sender_log.csv"
 
@@ -87,7 +87,7 @@ def sender_thread(sock):
 
             packet = header + midi_bytes + mac
             sock.sendto(packet, (DEST_IP, DEST_PORT))
-            print(f"Sent seq={seq}, {len(midi_bytes)} bytes to {DEST_IP}:{DEST_PORT}")
+            #print(f"Sent seq={seq}, {len(midi_bytes)} bytes to {DEST_IP}:{DEST_PORT}")
 
             # push to log queue
             log_queue.put((seq, send_ts))
