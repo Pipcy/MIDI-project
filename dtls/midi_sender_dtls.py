@@ -1,6 +1,6 @@
-# dtls_sender.py
-# DTLS-PSK client that sends your existing header+midi payloads, reads ACKs over the DTLS channel,
-# and logs RTT/one-way estimates.
+# midi_sender_dtls.py
+# DTLS-PSK client that sends header+MIDI payloads, reads ACKs,
+# and logs RTT / estimated one-way latency.
 
 import socket
 import struct
@@ -10,21 +10,23 @@ import sys
 import mido
 from threading import Thread, Lock, Event
 from queue import Queue, Empty
-from mbedtls.tls import DTLSConfiguration, DTLSClient, DTLSServer
+
+from mbedtls.tls import DTLSConfiguration, ClientContext, TLSWrappedSocket
 
 # ---------------- Configuration ----------------
-DEST_IP = "10.239.13.237"  # server IP (change)
+DEST_IP = "10.239.135.70"   # server IP (change as needed)
 DEST_PORT = 5005
 LOG_PATH = "sender_log.csv"
 
-HDR_FMT = "!IqH"          # seq:uint32, send_ts:int64 (ns), payload_len:uint16
+HDR_FMT = "!IqH"            # seq:uint32, send_ts:int64 (ns), payload_len:uint16
 HDR_SIZE = struct.calcsize(HDR_FMT)
 
-ACK_FMT = "!Iq"           # seq:uint32, recv_ts:int64 (ns)
+ACK_FMT = "!Iq"             # seq:uint32, recv_ts:int64 (ns)
 ACK_SIZE = struct.calcsize(ACK_FMT)
 
-PSK_IDENTITY = b"midi-client"
-PSK_KEY = b"t0ps3cr3tk3y"
+# PSK identity and key MUST match the receiver
+PSK_IDENTITY = "midi-client"        # string
+PSK_KEY = b"t0ps3cr3tk3y"           # bytes (same on server)
 
 # ---------------- Globals ---------------------
 seq = 0
@@ -40,6 +42,7 @@ try:
 except AttributeError:
     mono_ns = lambda: int(time.monotonic() * 1e9)
 
+
 def pick_input_port():
     names = mido.get_input_names()
     if not names:
@@ -48,35 +51,36 @@ def pick_input_port():
     print("Available MIDI inputs:")
     for i, name in enumerate(names):
         print(f"{i}: {name}")
+    # You can change this to prompt if you want
     return names[0]  # pick first
 
+
 # ---------------- DTLS client setup ----------------
-psk_store = {PSK_IDENTITY: PSK_KEY}
 conf = DTLSConfiguration(
-    pre_shared_key_store=psk_store,
+    pre_shared_key=(PSK_IDENTITY, PSK_KEY),
     validate_certificates=False,
 )
 
-# Underlying UDP socket
-udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-udp_sock.bind(("0.0.0.0", 0))  # ephemeral local port
-udp_sock.setblocking(False)
-
-# Create client-side TLS context and a TLSWrappedSocket connected to the server
+# Create client-side DTLS context and wrapped UDP socket
 ctx = ClientContext(conf)
-# TLSWrappedSocket(ctx, sock, server_side=False, server_hostname=None, peer_addr=(DEST_IP, DEST_PORT))
-dtls_sock = TLSWrappedSocket(ctx, udp_sock, server_side=False, server_hostname=None, peer_addr=(DEST_IP, DEST_PORT))
+dtls_sock: TLSWrappedSocket = ctx.wrap_socket(
+    socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
+    server_hostname=None,
+)
 
-# Perform handshake
+# Connect underlying DTLS socket to server and handshake
+dtls_sock.connect((DEST_IP, DEST_PORT))
 dtls_sock.do_handshake()
+dtls_sock.settimeout(0.1)
 print("DTLS handshake completed with", (DEST_IP, DEST_PORT))
+
 
 # ---------------- Threads ----------------
 def ack_reader():
-    """Read ACKs from the DTLS socket (decrypted)"""
+    """Read ACKs from the DTLS socket (decrypted) and store them in `acks`."""
     while not stop_event.is_set():
         try:
-            data = dtls_sock.recv(1024)  # blocking inside; you may want to set a timeout in your version
+            data = dtls_sock.recv(1024)
             if not data:
                 continue
             if len(data) >= ACK_SIZE:
@@ -84,8 +88,10 @@ def ack_reader():
                 with acks_lock:
                     acks[ack_seq] = recv_ts
         except Exception:
+            # timeout or other recoverable error
             time.sleep(0.001)
             continue
+
 
 def midi_poll_thread(inport):
     while not stop_event.is_set():
@@ -93,6 +99,7 @@ def midi_poll_thread(inport):
         if msg:
             midi_queue.put(msg)
         time.sleep(0.001)
+
 
 def sender_thread():
     global seq
@@ -113,7 +120,6 @@ def sender_thread():
             header = struct.pack(HDR_FMT, seq, send_ts, len(midi_bytes))
             packet = header + midi_bytes
 
-            # send via DTLS
             try:
                 dtls_sock.send(packet)
             except Exception as e:
@@ -121,9 +127,10 @@ def sender_thread():
                 midi_queue.task_done()
                 continue
 
-            # push to log queue
             log_queue.put((seq, send_ts))
+
         midi_queue.task_done()
+
 
 def logger_thread(log_path):
     with open(log_path, "w", newline="") as f:
@@ -138,12 +145,14 @@ def logger_thread(log_path):
             ack_received = False
             rtt_ns = None
             est_oneway_ns = None
-            # Wait for ACK (with a timeout or retry policy)
+
             wait_start = time.time()
             while not ack_received and time.time() - wait_start < 5.0:
                 with acks_lock:
                     if seq_num in acks:
                         recv_ts = acks.pop(seq_num)
+                        # We don't strictly need recv_ts for RTT,
+                        # we just use local time.
                         now_ns = mono_ns()
                         rtt_ns = now_ns - send_ts
                         est_oneway_ns = rtt_ns // 2
@@ -152,12 +161,19 @@ def logger_thread(log_path):
                 time.sleep(0.001)
 
             if not ack_received:
-                # mark with None or -1
                 writer.writerow([seq_num, send_ts / 1_000_000, None, None])
             else:
-                writer.writerow([seq_num, send_ts / 1_000_000, rtt_ns / 1_000_000, est_oneway_ns / 1_000_000])
+                writer.writerow(
+                    [
+                        seq_num,
+                        send_ts / 1_000_000,
+                        rtt_ns / 1_000_000,
+                        est_oneway_ns / 1_000_000,
+                    ]
+                )
             f.flush()
             log_queue.task_done()
+
 
 # ---------------- Main ----------------
 def main():
@@ -179,6 +195,9 @@ def main():
         except KeyboardInterrupt:
             stop_event.set()
             print("\nStopping sender...")
+            dtls_sock.close()
+
 
 if __name__ == "__main__":
     main()
+
