@@ -1,101 +1,92 @@
-# midi_receiver_dtls.py
+#!/usr/bin/env python3
 import socket
 import struct
 import time
-from contextlib import suppress
-from mbedtls.tls import DTLSConfiguration, ServerContext, TLSWrappedSocket, HelloVerifyRequest
+from threading import Thread
+import mido
+from mbedtls.tls import DTLSConfiguration, ServerContext, TLSWrappedSocket
 
 # ---------------- Configuration ----------------
 LISTEN_IP = "0.0.0.0"
 LISTEN_PORT = 5005
 
-HDR_FMT = "!IqH"  # seq:uint32, send_ts:int64, payload_len:uint16
+HDR_FMT = "!IqH"
 HDR_SIZE = struct.calcsize(HDR_FMT)
-ACK_FMT = "!Iq"   # seq:uint32, recv_ts:int64
-ACK_SIZE = struct.calcsize(ACK_FMT)
+ACK_FMT = "!Iq"
 
-PSK_IDENTITY = "midi-client"
-PSK_KEY = b"t0ps3cr3tk3y"
+PSK_IDENTITY = "midi-client"   # must be str
+PSK_KEY = b"t0ps3cr3tk3y"      # must be bytes
 
-try:
-    mono_ns = time.monotonic_ns
-except AttributeError:
-    mono_ns = lambda: int(time.monotonic() * 1e9)
+mono_ns = getattr(time, "monotonic_ns", lambda: int(time.monotonic() * 1e9))
 
-# ---------------- UDP + DTLS ----------------
-udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-udp_sock.bind((LISTEN_IP, LISTEN_PORT))
+# ---------------- MIDI Setup ----------------
+names = mido.get_output_names()
+if not names:
+    print("No MIDI output devices found!")
+    exit(1)
+outport = mido.open_output(names[0])
+print("Using MIDI output:", names[0])
 
-conf = DTLSConfiguration(pre_shared_key=(PSK_IDENTITY, PSK_KEY), validate_certificates=False)
+# ---------------- DTLS Setup ----------------
+conf = DTLSConfiguration(pre_shared_key=(PSK_IDENTITY, PSK_KEY))
 ctx = ServerContext(conf)
-srv_sock: TLSWrappedSocket = ctx.wrap_socket(udp_sock)
 
+srv_sock = ctx.wrap_socket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))  # remove server_side
+srv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv_sock.bind((LISTEN_IP, LISTEN_PORT))
+srv_sock.settimeout(1.0)
 print(f"DTLS server listening on {LISTEN_IP}:{LISTEN_PORT}")
 
-# ---------------- Accept client ----------------
-def accept_dtls_client(sock: TLSWrappedSocket) -> TLSWrappedSocket:
-    """
-    Accept a DTLS client and complete handshake.
-    Handles HelloVerifyRequest automatically.
-    """
-    cli, addr = sock.accept()
-    print("Initial DTLS client from", addr)
 
-    # First handshake attempt
-    with suppress(HelloVerifyRequest):
-        cli.do_handshake()
-
-    # Sometimes HelloVerifyRequest occurs; retry handshake if needed
-    try:
-        cli.do_handshake()
-    except HelloVerifyRequest:
-        cli.do_handshake()
-
-    cli.settimeout(1.0)
-    print("DTLS handshake completed with", addr)
-    return cli
-
-# ---------------- Handle client ----------------
-def handle_client(cli: TLSWrappedSocket):
+# ---------------- Client Handler ----------------
+def handle_client(cli: TLSWrappedSocket, addr):
+    print(f"[{addr}] Client handler started")
     while True:
         try:
             data = cli.recv(4096)
         except Exception:
             break
-
         if not data or len(data) < HDR_SIZE:
             continue
 
-        seq, send_ts_ns, payload_len = struct.unpack(HDR_FMT, data[:HDR_SIZE])
-        midi_payload = data[HDR_SIZE:HDR_SIZE + payload_len]
-        recv_ts_ns = mono_ns()
+        seq, send_ts, payload_len = struct.unpack(HDR_FMT, data[:HDR_SIZE])
+        midi_bytes = data[HDR_SIZE:HDR_SIZE+payload_len]
+        recv_ts = mono_ns()
 
-        print(f"Got seq={seq}, payload_len={payload_len}, send_ts={send_ts_ns}, recv_ts={recv_ts_ns}")
-        print("MIDI bytes:", list(midi_payload))
+        # Play MIDI
+        try:
+            msg = mido.Message.from_bytes(midi_bytes)
+            outport.send(msg)
+            print(f"[{addr}] Played seq={seq}: {msg}")
+        except Exception as e:
+            print("Invalid MIDI:", e)
 
-        ack = struct.pack(ACK_FMT, seq, recv_ts_ns)
+        # Send ACK
+        ack = struct.pack(ACK_FMT, seq, recv_ts)
         try:
             cli.send(ack)
-        except Exception as e:
-            print("Error sending ACK:", e)
+        except Exception:
             break
+    print(f"[{addr}] Client disconnected")
+    try:
+        cli.close()
+    except:
+        pass
 
-# ---------------- Main loop ----------------
-def main():
+
+# ---------------- Main Loop ----------------
+def accept_clients():
     while True:
         try:
-            print("Waiting for DTLS client...")
-            cli = accept_dtls_client(srv_sock)
-            handle_client(cli)
-            cli.close()
-            print("Client disconnected")
+            cli, addr = srv_sock.accept()
+            print("DTLS handshake completed with", addr)
+            Thread(target=handle_client, args=(cli, addr), daemon=True).start()
+        except socket.timeout:
+            continue
         except KeyboardInterrupt:
-            print("\nStopping server...")
-            srv_sock.close()
+            print("Server shutting down")
             break
-        except Exception as e:
-            print("Client handshake/connection failed:", e)
+
 
 if __name__ == "__main__":
-    main()
+    accept_clients()
