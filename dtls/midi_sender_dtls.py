@@ -1,4 +1,4 @@
-import socket
+# midi_sender_dtls.py
 import struct
 import time
 from threading import Thread, Lock, Event
@@ -7,7 +7,7 @@ import mido
 from mbedtls.tls import DTLSConfiguration, ClientContext, TLSWrappedSocket
 
 # ---------------- Configuration ----------------
-DEST_IP = "10.239.135.70"
+DEST_IP = "10.239.135.70"  # server IP
 DEST_PORT = 5005
 
 HDR_FMT = "!IqH"
@@ -39,13 +39,11 @@ def pick_input_port():
     return names[0]
 
 # ---------------- DTLS client ----------------
-conf = DTLSConfiguration(
-    pre_shared_key=(PSK_IDENTITY, PSK_KEY),  # single tuple
-    validate_certificates=False,
-)
+conf = DTLSConfiguration(pre_shared_key=(PSK_IDENTITY, PSK_KEY), validate_certificates=False)
 ctx = ClientContext(conf)
 dtls_sock: TLSWrappedSocket = ctx.wrap_socket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM), server_hostname=None)
 
+# Connect and handshake
 while True:
     try:
         dtls_sock.connect((DEST_IP, DEST_PORT))
