@@ -88,4 +88,32 @@ def sender():
         seq += 1
         send_ts = mono_ns()
         header = struct.pack(HDR_FMT, seq, send_ts, len(midi_bytes))
-        packet =
+        packet = header + midi_bytes
+
+        try:
+            dtls_sock.send(packet)
+        except Exception as e:
+            print("Send error:", e)
+            midi_queue.task_done()
+            continue
+
+        midi_queue.task_done()
+
+
+def main():
+    inport = mido.open_input(pick_input_port())
+    Thread(target=ack_reader, daemon=True).start()
+    Thread(target=midi_poll, args=(inport,), daemon=True).start()
+    Thread(target=sender, daemon=True).start()
+
+    print("Client running, press Ctrl+C to stop")
+    try:
+        while True:
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        stop_event.set()
+        dtls_sock.close()
+
+
+if __name__ == "__main__":
+    main()
