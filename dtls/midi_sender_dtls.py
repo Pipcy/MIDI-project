@@ -1,21 +1,14 @@
-# midi_sender_dtls.py
-# DTLS-PSK client that sends header+MIDI payloads and reads ACKs.
-
 import socket
 import struct
 import time
-import csv
-import sys
 from threading import Thread, Lock, Event
 from queue import Queue, Empty
 import mido
-
 from mbedtls.tls import DTLSConfiguration, ClientContext, TLSWrappedSocket
 
 # ---------------- Configuration ----------------
 DEST_IP = "10.239.135.70"
 DEST_PORT = 5005
-LOG_PATH = "sender_log.csv"
 
 HDR_FMT = "!IqH"
 HDR_SIZE = struct.calcsize(HDR_FMT)
@@ -30,7 +23,6 @@ seq = 0
 acks = {}
 acks_lock = Lock()
 midi_queue = Queue()
-log_queue = Queue()
 stop_event = Event()
 
 try:
@@ -43,29 +35,21 @@ def pick_input_port():
     names = mido.get_input_names()
     if not names:
         print("No MIDI input devices found!")
-        sys.exit(1)
-    print("Available MIDI inputs:")
-    for i, name in enumerate(names):
-        print(f"{i}: {name}")
+        exit(1)
     return names[0]
 
-# ---------------- DTLS setup ----------------
+# ---------------- DTLS client ----------------
 conf = DTLSConfiguration(
-    pre_shared_key=(PSK_IDENTITY, PSK_KEY),
+    pre_shared_key=(PSK_IDENTITY, PSK_KEY),  # single tuple
     validate_certificates=False,
 )
-
 ctx = ClientContext(conf)
-dtls_sock: TLSWrappedSocket = ctx.wrap_socket(
-    socket.socket(socket.AF_INET, socket.SOCK_DGRAM),
-    server_hostname=None,
-)
+dtls_sock: TLSWrappedSocket = ctx.wrap_socket(socket.socket(socket.AF_INET, socket.SOCK_DGRAM), server_hostname=None)
 
-# Connect and handshake with automatic retry
 while True:
     try:
         dtls_sock.connect((DEST_IP, DEST_PORT))
-        dtls_sock.do_handshake()  # automatic HelloVerify handling
+        dtls_sock.do_handshake()
         dtls_sock.settimeout(0.1)
         break
     except Exception as e:
@@ -73,19 +57,16 @@ while True:
         time.sleep(0.1)
 
 print("DTLS handshake completed with", (DEST_IP, DEST_PORT))
-print("Client PSK tuple:", (PSK_IDENTITY, PSK_KEY))
 
 # ---------------- Threads ----------------
 def ack_reader():
     while not stop_event.is_set():
         try:
             data = dtls_sock.recv(1024)
-            if not data:
-                continue
-            if len(data) >= ACK_SIZE:
-                ack_seq, recv_ts = struct.unpack(ACK_FMT, data[:ACK_SIZE])
+            if data and len(data) >= ACK_SIZE:
+                ack_seq, _ = struct.unpack(ACK_FMT, data[:ACK_SIZE])
                 with acks_lock:
-                    acks[ack_seq] = recv_ts
+                    acks[ack_seq] = True
         except Exception:
             time.sleep(0.001)
 
@@ -104,66 +85,20 @@ def sender_thread():
         except Empty:
             continue
 
-        if isinstance(msg, mido.Message):
-            midi_bytes = bytes(msg.bytes())
-            if not midi_bytes:
-                midi_queue.task_done()
-                continue
+        midi_bytes = bytes(msg.bytes())
+        if not midi_bytes:
+            midi_queue.task_done()
+            continue
 
-            seq += 1
-            send_ts = mono_ns()
-            header = struct.pack(HDR_FMT, seq, send_ts, len(midi_bytes))
-            packet = header + midi_bytes
-
-            try:
-                dtls_sock.send(packet)
-            except Exception as e:
-                print("DTLS send error:", e)
-                midi_queue.task_done()
-                continue
-
-            log_queue.put((seq, send_ts))
+        seq += 1
+        send_ts = mono_ns()
+        header = struct.pack(HDR_FMT, seq, send_ts, len(midi_bytes))
+        packet = header + midi_bytes
+        try:
+            dtls_sock.send(packet)
+        except Exception as e:
+            print("Send error:", e)
         midi_queue.task_done()
-
-def logger_thread(log_path):
-    with open(log_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["seq", "send_ts_ms", "rtt_ms", "est_oneway_ms"])
-        while not stop_event.is_set():
-            try:
-                seq_num, send_ts = log_queue.get(timeout=0.05)
-            except Empty:
-                continue
-
-            ack_received = False
-            rtt_ns = None
-            est_oneway_ns = None
-
-            wait_start = time.time()
-            while not ack_received and time.time() - wait_start < 5.0:
-                with acks_lock:
-                    if seq_num in acks:
-                        recv_ts = acks.pop(seq_num)
-                        now_ns = mono_ns()
-                        rtt_ns = now_ns - send_ts
-                        est_oneway_ns = rtt_ns // 2
-                        ack_received = True
-                        break
-                time.sleep(0.001)
-
-            if not ack_received:
-                writer.writerow([seq_num, send_ts / 1_000_000, None, None])
-            else:
-                writer.writerow(
-                    [
-                        seq_num,
-                        send_ts / 1_000_000,
-                        rtt_ns / 1_000_000,
-                        est_oneway_ns / 1_000_000,
-                    ]
-                )
-            f.flush()
-            log_queue.task_done()
 
 # ---------------- Main ----------------
 def main():
@@ -173,19 +108,17 @@ def main():
             Thread(target=ack_reader, daemon=True),
             Thread(target=midi_poll_thread, args=(inport,), daemon=True),
             Thread(target=sender_thread, daemon=True),
-            Thread(target=logger_thread, args=(LOG_PATH,), daemon=True),
         ]
         for t in threads:
             t.start()
-
-        print(f"Sending MIDI to DTLS {DEST_IP}:{DEST_PORT}, logging → {LOG_PATH}")
+        print(f"Sending MIDI to {DEST_IP}:{DEST_PORT}")
         try:
             while True:
                 time.sleep(0.1)
         except KeyboardInterrupt:
             stop_event.set()
-            print("\nStopping sender...")
             dtls_sock.close()
+            print("\nStopped.")
 
 if __name__ == "__main__":
     main()
