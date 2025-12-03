@@ -13,7 +13,7 @@ import mido
 from mbedtls.tls import DTLSConfiguration, ClientContext, TLSWrappedSocket
 
 # ---------------- Configuration ----------------
-DEST_IP = "10.239.135.70"   # server IP
+DEST_IP = "10.239.135.70"
 DEST_PORT = 5005
 LOG_PATH = "sender_log.csv"
 
@@ -38,7 +38,6 @@ try:
 except AttributeError:
     mono_ns = lambda: int(time.monotonic() * 1e9)
 
-
 # ---------------- MIDI input ----------------
 def pick_input_port():
     names = mido.get_input_names()
@@ -50,10 +49,9 @@ def pick_input_port():
         print(f"{i}: {name}")
     return names[0]
 
-
 # ---------------- DTLS setup ----------------
 conf = DTLSConfiguration(
-    pre_shared_key=(PSK_IDENTITY, PSK_KEY),  # tuple format for your mbedtls version
+    pre_shared_key=(PSK_IDENTITY, PSK_KEY),
     validate_certificates=False,
 )
 
@@ -63,11 +61,11 @@ dtls_sock: TLSWrappedSocket = ctx.wrap_socket(
     server_hostname=None,
 )
 
-# Connect and handshake with retry for WantReadError / non-blocking DTLS
+# Connect and handshake with automatic retry
 while True:
     try:
         dtls_sock.connect((DEST_IP, DEST_PORT))
-        dtls_sock.do_handshake()
+        dtls_sock.do_handshake()  # automatic HelloVerify handling
         dtls_sock.settimeout(0.1)
         break
     except Exception as e:
@@ -76,7 +74,6 @@ while True:
 
 print("DTLS handshake completed with", (DEST_IP, DEST_PORT))
 print("Client PSK tuple:", (PSK_IDENTITY, PSK_KEY))
-
 
 # ---------------- Threads ----------------
 def ack_reader():
@@ -92,14 +89,12 @@ def ack_reader():
         except Exception:
             time.sleep(0.001)
 
-
 def midi_poll_thread(inport):
     while not stop_event.is_set():
         msg = inport.poll()
         if msg:
             midi_queue.put(msg)
         time.sleep(0.001)
-
 
 def sender_thread():
     global seq
@@ -128,9 +123,7 @@ def sender_thread():
                 continue
 
             log_queue.put((seq, send_ts))
-
         midi_queue.task_done()
-
 
 def logger_thread(log_path):
     with open(log_path, "w", newline="") as f:
@@ -172,7 +165,6 @@ def logger_thread(log_path):
             f.flush()
             log_queue.task_done()
 
-
 # ---------------- Main ----------------
 def main():
     in_name = pick_input_port()
@@ -194,7 +186,6 @@ def main():
             stop_event.set()
             print("\nStopping sender...")
             dtls_sock.close()
-
 
 if __name__ == "__main__":
     main()

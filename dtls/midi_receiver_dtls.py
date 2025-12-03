@@ -4,9 +4,7 @@
 import socket
 import struct
 import time
-from contextlib import suppress
-
-from mbedtls.tls import DTLSConfiguration, ServerContext, TLSWrappedSocket, HelloVerifyRequest
+from mbedtls.tls import DTLSConfiguration, ServerContext, TLSWrappedSocket
 
 # ---------------- Configuration ----------------
 LISTEN_IP = "0.0.0.0"
@@ -18,18 +16,17 @@ HDR_SIZE = struct.calcsize(HDR_FMT)
 ACK_FMT = "!Iq"   # seq:uint32, recv_ts:int64 (ns)
 ACK_SIZE = struct.calcsize(ACK_FMT)
 
-PSK_IDENTITY = "midi-client"
-PSK_KEY = b"t0ps3cr3tk3y"
+PSK_IDENTITY = "midi-client"     # str
+PSK_KEY = b"t0ps3cr3tk3y"        # bytes
 
 try:
     mono_ns = time.monotonic_ns
 except AttributeError:
     mono_ns = lambda: int(time.monotonic() * 1e9)
 
-
 # ---------------- DTLS server setup ----------------
 conf = DTLSConfiguration(
-    pre_shared_key=(PSK_IDENTITY, PSK_KEY),  # tuple format for your mbedtls version
+    pre_shared_key=(PSK_IDENTITY, PSK_KEY),
     validate_certificates=False,
 )
 
@@ -45,23 +42,18 @@ print("Server PSK tuple:", (PSK_IDENTITY, PSK_KEY))
 
 
 def accept_dtls(listen_sock: TLSWrappedSocket) -> TLSWrappedSocket:
-    """Accept a DTLS client with cookie/handshake."""
-    cli0, addr0 = listen_sock.accept()
-    cli0.setcookieparam(addr0[0].encode("ascii"))
-    print("Initial DTLS client from", addr0)
-
-    with suppress(HelloVerifyRequest):
-        cli0.do_handshake()
-
-    cli1, addr1 = cli0.accept()
-    cli0.close()
-    cli1.setcookieparam(addr1[0].encode("ascii"))
-    print("Verified DTLS client from", addr1)
-
-    cli1.do_handshake()
-    print("DTLS handshake completed with", addr1)
-    cli1.settimeout(1.0)
-    return cli1
+    """Accept DTLS client and perform handshake."""
+    while True:
+        try:
+            client_sock, addr = listen_sock.accept()
+            print("DTLS client from", addr)
+            client_sock.do_handshake()  # automatic HelloVerify handling
+            client_sock.settimeout(1.0)
+            print("Handshake completed with", addr)
+            return client_sock
+        except Exception as e:
+            print("Handshake attempt failed:", e)
+            continue
 
 
 def handle_client(cli: TLSWrappedSocket):
@@ -81,7 +73,6 @@ def handle_client(cli: TLSWrappedSocket):
 
         seq, send_ts_ns, payload_len = struct.unpack(HDR_FMT, data[:HDR_SIZE])
         midi_payload = data[HDR_SIZE:HDR_SIZE + payload_len]
-
         recv_ts_ns = mono_ns()
 
         print(
