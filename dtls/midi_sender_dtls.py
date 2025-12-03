@@ -25,8 +25,13 @@ ACK_FMT = "!Iq"             # seq:uint32, recv_ts:int64 (ns)
 ACK_SIZE = struct.calcsize(ACK_FMT)
 
 # PSK identity and key MUST match the receiver
-PSK_IDENTITY = b"midi-client"        # string
+PSK_IDENTITY = "midi-client"        # string
 PSK_KEY = b"t0ps3cr3tk3y"           # bytes (same on server)
+
+conf = DTLSConfiguration(
+    pre_shared_key=(PSK_IDENTITY, PSK_KEY),
+    validate_certificates=False,
+)
 
 # ---------------- Globals ---------------------
 seq = 0

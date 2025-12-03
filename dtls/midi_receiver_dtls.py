@@ -23,8 +23,13 @@ HDR_SIZE = struct.calcsize(HDR_FMT)
 ACK_FMT = "!Iq"             # seq:uint32, recv_ts:int64 (ns)
 ACK_SIZE = struct.calcsize(ACK_FMT)
 
-PSK_IDENTITY = b"midi-client"        # must match sender
+PSK_IDENTITY = "midi-client"        # must match sender
 PSK_KEY = b"t0ps3cr3tk3y"           # must match sender
+
+conf = DTLSConfiguration(
+    pre_shared_key={PSK_IDENTITY: PSK_KEY},   # <-- THIS is the correct server format
+    validate_certificates=False,
+)
 
 try:
     mono_ns = time.monotonic_ns
